@@ -9,7 +9,7 @@ echo = Pin(19, Pin.IN)
 
   
 
-TIMEOUT_US = 25000   # limita o bloqueio (~4 m de alcance, sobra para a caixa) 
+TIMEOUT_US = 25000   
 
   
 
@@ -21,19 +21,19 @@ def ler_distancia_cm():
 
     trig.value(1) 
 
-    time.sleep_us(10)          # pulso de gatilho de 10 us 
+    time.sleep_us(10)           
 
     trig.value(0) 
 
-    t = time_pulse_us(echo, 1, TIMEOUT_US) 
+    tempo = time_pulse_us(echo, 1, TIMEOUT_US) 
 
-    if t < 0:                  # -2: eco não começou | -1: eco não terminou 
+    if tempo < 0:                
 
-        return None            # leitura inválida, mas o programa segue 
+        return None         
 
-    d = t / 58.3               # ida e volta, velocidade do som ~343 m/s 
+    d = tempo / 58.3              
 
-    if d < 2 or d > 400:       # fora da faixa física do sensor 
+    if d < 2 or d > 400:     
 
         return None 
 
@@ -43,9 +43,9 @@ leituras = []
 
   
 
-def filtrar(d): 
+def filtrar(distancias): 
 
-    leituras.append(d) 
+    leituras.append(distancias) 
 
     if len(leituras) > 5: 
 
@@ -62,7 +62,6 @@ led_vermelho = Pin(26, Pin.OUT, value=0)
 
 led_bomba    = Pin(27, Pin.OUT, value=0) 
 
-# Adicione a boia no pino 33 (com pull-up, igual à emergência)
 chave_boia   = Pin(33, Pin.IN, Pin.PULL_UP)
 
 falhas_consecutivas = 0
@@ -90,17 +89,17 @@ TOPICO_CMD = PREFIXO + b"bomba/comando"
 
   
 
-estado     = "MONITORANDO"   # estado atual da máquina de estados 
+estado     = "MONITORANDO"  
 
-nivel      = None            # "ALTO", "MEDIO", "BAIXO" ou "ERRO" 
+nivel      = None            
 
-bomba      = False           # RF18: a ESP sempre inicia com a bomba desligada 
+bomba      = False          
 
 emergencia = False 
 
-cmd_ligar  = False           # flag marcada pelo callback do MQTT 
+cmd_ligar  = False          
 
-conectado  = False           # indica se o MQTT está conectado 
+conectado  = False           
 
 
 
@@ -188,14 +187,26 @@ def ao_receber(topico, msg):
 
 def atualizar_estado():
     global nivel, t_pisca, pisca_vermelho
-    
-    if estado == "FALHA_SENSOR":
+
+    if emergencia:
         agora = time.ticks_ms()
-        if time.ticks_diff(agora, t_pisca) >= 500:  
+
+        if time.ticks_diff(agora, t_pisca) >= 500:
             t_pisca = agora
             pisca_vermelho = not pisca_vermelho
             led_vermelho.value(1 if pisca_vermelho else 0)
-        return 
+
+        return
+
+    if estado == "FALHA_SENSOR":
+        agora = time.ticks_ms()
+
+        if time.ticks_diff(agora, t_pisca) >= 500:
+            t_pisca = agora
+            pisca_vermelho = not pisca_vermelho
+            led_vermelho.value(1 if pisca_vermelho else 0)
+
+        return
 
     novo_nivel = nivel
     
@@ -224,7 +235,6 @@ def atualizar_estado():
 
 def processar_comando(): 
 
-    # Chamada a cada volta do laço principal 
 
     global cmd_ligar 
 
@@ -232,7 +242,7 @@ def processar_comando():
 
         return 
 
-    cmd_ligar = False                # consome a flag 
+    cmd_ligar = False                
 
     if emergencia: 
 
@@ -245,13 +255,16 @@ def processar_comando():
     else: 
 
         ligar_bomba()
-def atualizar_leds(): 
+        
+def atualizar_leds():
+    led_verde.value(1 if nivel == "MEDIO" else 0)
 
-    led_verde.value(1 if nivel == "MEDIO" else 0) 
+    if emergencia:
+        pass
+    else:
+        led_vermelho.value(1 if nivel == "BAIXO" else 0)
 
-    led_vermelho.value(1 if nivel == "BAIXO" else 0) 
-
-    led_bomba.value(1 if bomba else 0) 
+    led_bomba.value(1 if bomba else 0)
 
   
 
@@ -269,7 +282,6 @@ def ao_mudar_nivel(novo):
 
     if estado == "ENCHENDO" and novo == "ALTO": 
 
-        # Decisão LOCAL: não depende da rede nem do PC 
 
         desligar_bomba(b"Caixa CHEIA: bomba desligada. Supervisor volta a monitorar") 
 
@@ -283,7 +295,6 @@ def ao_mudar_nivel(novo):
 
     elif estado == "AGUARDANDO_DECISAO" and novo != "BAIXO": 
 
-        # O nível subiu sem a bomba (por exemplo, a caixa foi enchida manualmente) 
 
         estado = "MONITORANDO" 
 
@@ -331,9 +342,8 @@ def isr_boia(pin):
 chave_boia.irq(trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING, handler=isr_boia)
 
 
-def tratar_emergencia(ativa): 
-
-    global emergencia, estado 
+def tratar_emergencia(ativa):
+    global emergencia, estado, pisca_vermelho, t_pisca
 
     emergencia = ativa 
 
@@ -349,19 +359,18 @@ def tratar_emergencia(ativa):
 
         estado = "EMERGENCIA" 
 
-    else: 
+    else:
+      publicar(T_ALERTA, b"Emergencia liberada")
 
-        publicar(T_ALERTA, b"Emergencia liberada") 
+      if nivel == "BAIXO":
+          estado = "AGUARDANDO_DECISAO"
+      else:
+          estado = "MONITORANDO"
 
-        if nivel == "BAIXO": 
+      pisca_vermelho = False
+      t_pisca = time.ticks_ms()
 
-            estado = "AGUARDANDO_DECISAO" 
-
-            publicar(T_ALERTA, b"Nivel BAIXO: aguardando nova decisao do supervisor") 
-
-        else: 
-
-            estado = "MONITORANDO" 
+      atualizar_leds() 
 
   
 
@@ -430,6 +439,8 @@ def conectar_mqtt():
 
     cliente.connect() 
 
+    cliente.sock.settimeout(0)
+
     cliente.subscribe(TOPICO_CMD, qos=1) # assinar de novo a cada conexão 
 
     cliente.publish(T_STATUS, b"online", retain=True) 
@@ -448,7 +459,6 @@ def conectar_mqtt():
 
 def tentar_reconectar(): 
 
-    # Chamada no laço principal quando conectado == False 
 
     global conectado, t_tentativa 
 
@@ -456,7 +466,7 @@ def tentar_reconectar():
 
     if time.ticks_diff(agora, t_tentativa) < 5000: 
 
-        return                           # ainda não é hora de tentar de novo 
+        return                          
 
     t_tentativa = agora 
 
@@ -464,7 +474,7 @@ def tentar_reconectar():
 
         if not wlan.isconnected(): 
 
-            wlan.connect(SSID, SENHA)    # não espera aqui; confere na próxima tentativa 
+            wlan.connect(SSID, SENHA)    
 
             return 
 
@@ -480,13 +490,12 @@ def tentar_reconectar():
 
   
 
-# ---- Inicialização (só aqui é aceitável esperar alguns segundos) ---- 
 
 wlan.active(True) 
 
 wlan.connect(SSID, SENHA) 
 
-for _ in range(20):                      # espera até ~10 s pelo Wi-Fi 
+for _ in range(20):                      
 
     if wlan.isconnected(): 
 
@@ -500,62 +509,36 @@ try:
 
 except OSError: 
 
-    conectado = False                    # segue sem rede; o laço tenta de novo
+    conectado = False                    
 
 
 t_leitura = t_telemetria = time.ticks_ms() 
 
   
 
-while True: 
+while True:
 
-    agora = time.ticks_ms() 
+    agora = time.ticks_ms()
 
-  
+    if conectado:
+        try:
+            cliente.check_msg()
+        except OSError as e:
+            print("MQTT desconectado:", e)
+            conectado = False
 
-    # 1. Rede: verifica mensagens sem bloquear 
+    tratar_chaves()
 
-    try: 
+    processar_comando()
 
-        cliente.check_msg() 
+    if time.ticks_diff(agora, t_leitura) >= 200:
+        t_leitura = agora
+        processar_leitura(ler_distancia_cm())
 
-    except OSError: 
+    atualizar_estado()
 
-        tentar_reconectar()              # tenta reconectar sem travar a lógica local 
+    if time.ticks_diff(agora, t_telemetria) >= 5000:
+        t_telemetria = agora
+        publicar_distancia()
 
-  
-
-    # 2. Chaves: trata as flags das interrupções (com debounce) 
-
-    tratar_chaves() 
-
-  
-
-    # 3. Sensor: uma leitura a cada 200 ms 
-
-    if time.ticks_diff(agora, t_leitura) >= 200: 
-
-        t_leitura = agora 
-
-        processar_leitura(ler_distancia_cm()) 
-
-  
-
-    # 4. Máquina de estados: decide, atualiza LEDs, publica mudanças 
-
-    atualizar_estado() 
-
-  
-
-    # 5. Telemetria periódica (também mantém o keepalive) 
-
-    if time.ticks_diff(agora, t_telemetria) >= 5000: 
-
-        t_telemetria = agora 
-
-        publicar_distancia() 
-
-  
-
-    time.sleep_ms(20)             # pausa curta, apenas para não ocupar 100% da CPU 
-    
+    time.sleep_ms(20)
